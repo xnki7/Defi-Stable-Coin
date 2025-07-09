@@ -11,9 +11,13 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TokenAddressesAndPriceFeedAddressesLengthMismatch();
     error DSCEngine__TokenNotAllowed();
     error DSCEngine__TransferFailed();
+    error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
 
     uint256 private constant ADDITIONAL_FEED_PRECESION = 1e10;
     uint256 private constant PRECESION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50;
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
 
     mapping(address token => address priceFeed) private s_priceFeeds;
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
@@ -74,7 +78,7 @@ contract DSCEngine is ReentrancyGuard {
 
     function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
         s_DSCMinted[msg.sender] += amountDscToMint;
-        revertIfHealthFactorIsBroken(msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     function burnDsc() external {}
@@ -94,9 +98,17 @@ contract DSCEngine is ReentrancyGuard {
 
     function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalDscMinted, uint256 totalCollateralValueInUsd) = _getAccountInformation(user);
+        uint256 collateralAdjustedForThreshold =
+            (totalCollateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECESION) / totalDscMinted;
     }
 
-    function _revertIfHealthFactorIsBroken(address user) internal view {}
+    function _revertIfHealthFactorIsBroken(address user) internal view {
+        uint256 healthFactor = _healthFactor(user);
+        if (healthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine__BreaksHealthFactor(healthFactor);
+        }
+    }
 
     function getAccountCollateralValue(address user) public view returns (uint256 totalCollateralValueInUsd) {
         for (uint256 i = 0; i < s_collateralTokens.length; i++) {
@@ -109,8 +121,8 @@ contract DSCEngine is ReentrancyGuard {
 
     function getUsdValue(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price, , , ) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.latestRoundData();
         // returned value from cl will be $price_usd * 1e8
-        return ((uint256(price) * ADDITIONAL_FEED_PRECESION) * amount)/ PRECESION;
+        return ((uint256(price) * ADDITIONAL_FEED_PRECESION) * amount) / PRECESION;
     }
 }
